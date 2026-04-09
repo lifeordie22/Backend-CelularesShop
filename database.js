@@ -2,10 +2,10 @@
 import mysql from 'mysql2/promise';
 
 const db = await mysql.createPool({
-  host: 'localhost',       // tu host, normalmente localhost
-  user: 'root',            // tu usuario
-  password: '', // reemplaza con tu contraseña
-  database: 'celulares_shop',     // la base de datos que creaste
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'celulares_shop',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0

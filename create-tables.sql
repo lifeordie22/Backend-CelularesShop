@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS products (
   image VARCHAR(255),
   category VARCHAR(100),
   description TEXT,
-  stock INT DEFAULT 0,
+  quantity INT DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_category (category)

@@ -1,10 +1,11 @@
+import 'dotenv/config';
 import mysql from 'mysql2/promise';
 
 const dbConfig = {
-  host: 'localhost',
-  user: 'root',
-  password: '',
-  database: 'celulares_shop'
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'celulares_shop'
 };
 
 // 200+ celulares reales con imagenes de GSMArena y precios en ARS (2026)

@@ -115,9 +115,9 @@ app.post('/crear-preferencia', async (req, res) => {
           currency_id: 'ARS'
         })),
         back_urls: {
-          success: 'http://localhost:4200/checkout/success',
-          failure: 'http://localhost:4200/checkout/failure',
-          pending: 'http://localhost:4200/checkout/pending'
+          success: 'https://celulares-shop.web.app/checkout/success',
+          failure: 'https://celulares-shop.web.app/checkout/failure',
+          pending: 'https://celulares-shop.web.app/checkout/pending'
         },
         statement_descriptor: 'CELULARES SHOP',
         external_reference: `order_${Date.now()}`
@@ -319,6 +319,6 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.listen(3000, () => {
-  console.log('🚀 Servidor backend en http://localhost:3000');
-  console.log('📍 Health check: GET http://localhost:3000/health');
+  console.log('🚀 Servidor backend en https://backend-celularesshop.onrender.com');
+  console.log('📍 Health check: GET https://backend-celularesshop.onrender.com/health');
 });
