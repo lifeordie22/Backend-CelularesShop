@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import db from './database.js';
 import sgMail from '@sendgrid/mail';
 import { MercadoPagoConfig, Preference, Payment } from 'mercadopago';
@@ -10,11 +12,41 @@ const client = new MercadoPagoConfig({
 });
 
 // 📧 Configurar SendGrid
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+if (process.env.SENDGRID_API_KEY) {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+}
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+// 🔒 Seguridad: cabeceras HTTP
+app.use(helmet());
+
+// 🔒 CORS restringido a los orígenes permitidos
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ||
+  'https://celulares-shop.web.app,https://celulares-shop.firebaseapp.com,http://localhost:4200')
+  .split(',')
+  .map(o => o.trim());
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Permitir herramientas sin origin (curl, Postman) y orígenes en la lista
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Origen no permitido por CORS'));
+  }
+}));
+
+app.use(express.json({ limit: '1mb' }));
+
+// 🔒 Rate limiting básico para evitar abuso
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(apiLimiter);
 
 // � Función para enviar email de confirmación
 async function enviarEmailConfirmacion(email, nombre, pedido_id, items, total) {
@@ -99,9 +131,19 @@ app.post('/crear-preferencia', async (req, res) => {
   try {
     const { items } = req.body;
 
-    // Validar que los items existan
-    if (!items || items.length === 0) {
+    // Validar que los items existan y tengan formato correcto
+    if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items requeridos' });
+    }
+
+    const itemsValidos = items.every(item =>
+      item &&
+      typeof item.title === 'string' &&
+      Number(item.unit_price) >= 0 &&
+      Number(item.quantity) > 0
+    );
+    if (!itemsValidos) {
+      return res.status(400).json({ error: 'Formato de items inválido' });
     }
 
     const preference = new Preference(client);
@@ -109,7 +151,7 @@ app.post('/crear-preferencia', async (req, res) => {
     const result = await preference.create({
       body: {
         items: items.map(item => ({
-          title: item.title || 'Producto',
+          title: String(item.title || 'Producto').slice(0, 256),
           quantity: Number(item.quantity) || 1,
           unit_price: Number(item.unit_price) || 0,
           currency_id: 'ARS'
@@ -138,11 +180,16 @@ app.post('/guardar-pedido', async (req, res) => {
     const { customer_email, customer_name, items, total, payment_id, mercado_pago_id } = req.body;
 
     // Validaciones básicas
-    if (!customer_email || !customer_name || !items || items.length === 0 || !total) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!customer_email || !emailRegex.test(customer_email)) {
+      return res.status(400).json({ error: 'Email inválido' });
+    }
+    if (!customer_name || !Array.isArray(items) || items.length === 0 || !(Number(total) > 0)) {
       return res.status(400).json({ error: 'Datos incompletos para guardar pedido' });
     }
 
-    // 🔹 Verificar el pago con Mercado Pago antes de guardar
+    // 🔹 Verificar el pago con Mercado Pago antes de guardar.
+    // La fuente de verdad es SIEMPRE la API de MP, no el cliente.
     let paymentStatus = 'unknown';
     let paymentVerified = false;
     if (payment_id && payment_id !== 'N/A') {
@@ -154,17 +201,17 @@ app.post('/guardar-pedido', async (req, res) => {
         console.log(`📋 Pago ${payment_id} verificado: ${paymentStatus}`);
       } catch (verifyError) {
         console.warn('⚠️ No se pudo verificar pago con MP:', verifyError.message);
-        // En modo test puede fallar la verificación, guardar igual
-        paymentVerified = true;
+        // Si no se puede verificar, NO confirmamos: se guarda como pendiente.
+        paymentStatus = 'pending';
+        paymentVerified = false;
       }
     } else {
-      // Sin payment_id, guardar como pendiente
-      paymentVerified = true;
+      // Sin payment_id confiable -> queda pendiente, NO completado.
+      paymentStatus = 'pending';
+      paymentVerified = false;
     }
 
-    if (!paymentVerified) {
-      return res.status(400).json({ error: `Pago no aprobado. Estado: ${paymentStatus}` });
-    }
+    const estadoFinal = paymentVerified && paymentStatus === 'approved' ? 'completed' : 'pending';
 
     // Guardar pedido en la base de datos
     const [result] = await db.query(
@@ -176,22 +223,32 @@ app.post('/guardar-pedido', async (req, res) => {
         total,
         payment_id || null,
         mercado_pago_id || null,
-        paymentStatus === 'approved' ? 'completed' : 'pending'
+        estadoFinal
       ]
     );
 
     const order_id = result.insertId;
-    console.log('✅ Pedido guardado - Order ID:', order_id, '- Estado:', paymentStatus);
+    console.log('✅ Pedido guardado - Order ID:', order_id, '- Estado:', estadoFinal);
 
-    // 🔹 Descontar stock de los productos vendidos
-    for (const item of items) {
-      try {
-        await db.query(
-          'UPDATE products SET quantity = GREATEST(quantity - ?, 0) WHERE name = ?',
-          [item.quantity, item.title]
-        );
-      } catch (stockError) {
-        console.warn(`⚠️ No se pudo descontar stock para: ${item.title}`, stockError.message);
+    // 🔹 Descontar stock SOLO si el pago está aprobado
+    if (estadoFinal === 'completed') {
+      for (const item of items) {
+        try {
+          if (item.id) {
+            // Preferimos descontar por id (más confiable que por nombre)
+            await db.query(
+              'UPDATE products SET quantity = GREATEST(quantity - ?, 0) WHERE id = ?',
+              [item.quantity, item.id]
+            );
+          } else {
+            await db.query(
+              'UPDATE products SET quantity = GREATEST(quantity - ?, 0) WHERE name = ?',
+              [item.quantity, item.title]
+            );
+          }
+        } catch (stockError) {
+          console.warn(`⚠️ No se pudo descontar stock para: ${item.title}`, stockError.message);
+        }
       }
     }
 
@@ -203,7 +260,7 @@ app.post('/guardar-pedido', async (req, res) => {
     res.json({
       success: true,
       order_id: order_id,
-      payment_status: paymentStatus,
+      payment_status: estadoFinal,
       message: 'Pedido guardado correctamente',
       email_enviado: emailEnviado
     });
@@ -223,7 +280,7 @@ app.get('/verificar-pago/:payment_id', async (req, res) => {
     }
 
     const payment = new Payment(client);
-    const result = await payment.get(payment_id);
+    const result = await payment.get({ id: payment_id });
 
     console.log('📋 Estado del pago:', result.status);
 
